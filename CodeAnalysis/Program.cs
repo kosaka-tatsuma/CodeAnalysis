@@ -19,15 +19,17 @@ namespace CodeAnalysis
 
 			foreach(var proj in manager.Projects) {
 				var typedb = new TypeDatabase();
+				Console.WriteLine("Building " + proj.Key + " now...");
 				typedb.Build(proj.Value);
 
 				foreach(var type_symbol in typedb._TypeSymbolList) {
-					foreach(var member in type_symbol.GetMembers()) {
-						if(member.Kind == SymbolKind.Method && member is IMethodSymbol method_symbol) {
-							Console.WriteLine(method_symbol.ToDisplayString());
-						}
+					Console.WriteLine(type_symbol._Symbol.Name + " - " + (type_symbol._Symbol.IsValueType? "struct" : "class"));
+					foreach(var symbol in type_symbol._MethodSymbolContainerList) {
+						Console.WriteLine("\t" + symbol._Symbol.Name);
 					}
 				}
+
+				proj.Value.Build();
 			}
 
 			Console.WriteLine("Fin");
