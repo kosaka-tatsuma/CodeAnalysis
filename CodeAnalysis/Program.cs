@@ -33,7 +33,6 @@ namespace CodeAnalysis
 			}
 
 			Console.WriteLine("Fin");
-			Console.ReadKey();
 		}
 
 
