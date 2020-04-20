@@ -45,19 +45,10 @@ namespace CodeAnalysis
 								walker.Visit(root);
 							}
 							writer.WriteLine("--- End");
-
-							//foreach(var method_node in walker._MethodList) {
-							//	method_node.Parent
-							//}
 						}
 					}
 				}
 			}
-		}
-		
-		bool CheckSameMethod(IMethodSymbol symbol, BaseMethodDeclarationSyntax node)
-		{
-			return false;
 		}
 
 		class Walker : SyntaxWalker
@@ -302,6 +293,8 @@ namespace CodeAnalysis
 		public readonly T _Symbol;
 
 		public SymbolContainer(T symbol) => _Symbol = symbol;
+
+		public override string ToString() => _Symbol.Name;
 	}
 
 	public sealed class TypeSymbolContainer : SymbolContainer<ITypeSymbol>
@@ -336,13 +329,45 @@ namespace CodeAnalysis
 
 	public sealed class MethodSymbolContainer : SymbolContainer<IMethodSymbol>
 	{
-		MethodDeclarationSyntax SyntaxNode { get; set; }
+		public bool IsAbstract => _Symbol.IsAbstract;
 
-		public MethodSymbolContainer(IMethodSymbol symbol) : base(symbol) { }
+		public readonly BlockSyntax _Block;
 
-		public void Initialize(MethodDeclarationSyntax node)
+		public MethodSymbolContainer(IMethodSymbol symbol) : base(symbol)
 		{
-			SyntaxNode = node;
+			BlockSyntax create_block(ExpressionSyntax express_syntax)
+			{
+				StatementSyntax statement = null;
+				if(_Symbol.ReturnsVoid) {
+					statement = SyntaxFactory.ExpressionStatement(express_syntax);
+				}
+				else {
+					statement = SyntaxFactory.ReturnStatement(express_syntax);
+				}
+				statement = statement.NormalizeWhitespace();
+				return SyntaxFactory.Block(statement);
+			}
+
+			var block = SyntaxFactory.Block();
+			if(_Symbol.DeclaringSyntaxReferences.Length > 0 && IsAbstract == false) {
+				var syntax = _Symbol.DeclaringSyntaxReferences[0].GetSyntax();
+				switch(syntax.Kind()) {
+				case SyntaxKind.MethodDeclaration: {
+						var method = (MethodDeclarationSyntax)syntax;
+						block = method.Body ?? create_block(method.ExpressionBody.Expression);
+					}
+					break;
+
+				case SyntaxKind.ArrowExpressionClause: {
+						var clause = (ArrowExpressionClauseSyntax)syntax;
+						block = create_block(clause.Expression);
+					}
+					break;
+				}
+			}
+			_Block = block;
 		}
+
+		public override string ToString() => _Symbol.GetFqn();
 	}
 }
