@@ -8,7 +8,7 @@ namespace CodeAnalysis
 {
 	using Microsoft.CodeAnalysis;
 
-	abstract class AnalysisResultBase
+	public abstract class AnalysisResultBase
 	{
 		public int Layer { get; } // 0は言語層
 
@@ -26,7 +26,7 @@ namespace CodeAnalysis
 		public abstract string DumpCsv();
 	}
 
-	class AnalysisResult<T>: AnalysisResultBase where T : Enum
+	public class AnalysisResult<T>: AnalysisResultBase where T : Enum
 	{
 		public T Code { get; }
 

@@ -309,8 +309,7 @@ namespace CodeAnalysis
 			foreach(var member_symbol in symbol.GetMembers()) {
 				switch(member_symbol.Kind) {
 				case SymbolKind.Method: {
-						var method_symbol = (IMethodSymbol)member_symbol;
-						_MethodSymbolContainerListInternal.Add(new MethodSymbolContainer(method_symbol));
+						_MethodSymbolContainerListInternal.Add(new MethodSymbolContainer((IMethodSymbol)member_symbol));
 					}
 					break;
 
@@ -329,7 +328,9 @@ namespace CodeAnalysis
 
 	public sealed class MethodSymbolContainer : SymbolContainer<IMethodSymbol>
 	{
-		public bool IsAbstract => _Symbol.IsAbstract;
+		public bool Valid { get; }
+
+		public string[] UsableNamespace { get; }
 
 		public readonly BlockSyntax _Block;
 
@@ -349,8 +350,21 @@ namespace CodeAnalysis
 			}
 
 			var block = SyntaxFactory.Block();
-			if(_Symbol.DeclaringSyntaxReferences.Length > 0 && IsAbstract == false) {
+			if(_Symbol.DeclaringSyntaxReferences.Length > 0 && _Symbol.IsAbstract == false) {
+				//--- 使用できる名前空間を検知 ---//
 				var syntax = _Symbol.DeclaringSyntaxReferences[0].GetSyntax();
+				{
+					var location = _Symbol.Locations.First(e => e.SourceTree.GetRoot().DescendantNodes().Any(node => node == syntax));
+					var namespace_list = location.SourceTree.GetRoot().DescendantNodes()
+						.Where(e => e.Kind() == SyntaxKind.UsingDirective)
+						.Cast<UsingDirectiveSyntax>()
+						.Select(e => e.Name.ToString())
+						.ToHashSet();
+					namespace_list.Add(_Symbol.ContainingNamespace.Name);
+					UsableNamespace = namespace_list.ToArray();
+				}
+
+				//--- BlockSyntaxの設定 ---//
 				switch(syntax.Kind()) {
 				case SyntaxKind.MethodDeclaration: {
 						var method = (MethodDeclarationSyntax)syntax;
@@ -364,6 +378,8 @@ namespace CodeAnalysis
 					}
 					break;
 				}
+
+				Valid = true;
 			}
 			_Block = block;
 		}

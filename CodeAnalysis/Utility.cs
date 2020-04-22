@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -12,13 +13,27 @@ namespace CodeAnalysis
 	public static class Util
 	{
 		#region Diagnostics
-		public static void Assert(bool condition, string msg) => Trace.Assert(condition, msg);
+		class AssertException : Exception
+		{
+			public AssertException(string msg) : base(msg) { }
+		}
+
+		public static void Assert(bool condition, string msg)
+		{
+			if(condition == false) {
+				throw new AssertException(msg);
+			}
+		}
 
 		public static void InfoLine(string msg) => Trace.TraceInformation(msg);
 
 		public static void TraceLine(string msg) => Trace.WriteLine(msg);
 
 		public static void ErrorLine(string msg) => Trace.TraceError(msg);
+		#endregion
+
+		#region IList&IEnumerable
+		public static ReadOnlyCollection<T> ToReadOnlyCollection<T>(this IList<T> self) => new ReadOnlyCollection<T>(self);
 		#endregion
 	}
 
