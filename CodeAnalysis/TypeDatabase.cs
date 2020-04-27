@@ -1,8 +1,9 @@
 ﻿using System;
+using System.IO;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
-
+using System.Text.RegularExpressions;
 using Buildalyzer;
 using Buildalyzer.Workspaces;
 
@@ -19,6 +20,8 @@ namespace CodeAnalysis
 		readonly List<TypeSymbolContainer> _TypeSymbolListInternal = new List<TypeSymbolContainer>();
 		public readonly ReadOnlyCollection<TypeSymbolContainer> _TypeSymbolList;
 
+		Compilation Compilation { get; set; }
+
 		public TypeDatabase()
 		{
 			_TypeSymbolList = new ReadOnlyCollection<TypeSymbolContainer>(_TypeSymbolListInternal);
@@ -27,33 +30,51 @@ namespace CodeAnalysis
 		public void Build(ProjectAnalyzer analyzer)
 		{
 			using(var ws = analyzer.GetWorkspace()) {
-				foreach(var proj in ws.CurrentSolution.Projects) {
-					//--- ログの蓄積フォルダの生成 ---//
-					var dirinfo = System.IO.Directory.CreateDirectory(FootprintFolderName + "\\" + proj.Name);
+				var projs = ws.CurrentSolution.Projects.ToArray();
+				Util.Assert(projs.Length == 1, "Projectが複数存在することは想定されていません。");
+				var proj = projs[0];
 
-					var comp = proj.GetCompilationAsync().Result;
-					foreach(var cls_symbol in comp.GetSymbolsWithName(_ => true, SymbolFilter.Type).OfType<ITypeSymbol>()) {
-						var container = new TypeSymbolContainer(cls_symbol);
-						_TypeSymbolListInternal.Add(container);
-					}
+				//--- ログの蓄積フォルダの生成 ---//
+				var dirinfo = Directory.CreateDirectory(FootprintFolderName + "\\" + proj.Name);
 
-					foreach(var doc in proj.Documents) {
-						using(var writer = new System.IO.StreamWriter(dirinfo.FullName +  $"\\footprint_{doc.Name}.log")) {
-							var walker = new Walker() { Writer = writer };
-							writer.WriteLine(doc.FilePath);
-							if(System.IO.Path.GetExtension(doc.FilePath) == ".cs" && doc.TryGetSyntaxRoot(out var root)) {
-								walker.Visit(root);
-							}
-							writer.WriteLine("--- End");
+				//--- TypeSymbolの収集 ---//
+				var comp = Compilation = proj.GetCompilationAsync().Result;
+				_TypeSymbolListInternal.Clear();
+				foreach(var cls_symbol in comp.GetSymbolsWithName(_ => true, SymbolFilter.Type).OfType<ITypeSymbol>()) {
+					var container = new TypeSymbolContainer(this, cls_symbol);
+					_TypeSymbolListInternal.Add(container);
+				}
+
+				//--- スクリプトファイルの中身をダンプ ---//
+				foreach(var doc in proj.Documents) {
+					using(var writer = new StreamWriter(dirinfo.FullName +  $"\\footprint_{doc.Name.Replace(".", "_")}_{doc.Id.Id}.log")) {
+						var walker = new Walker() { Writer = writer };
+						writer.WriteLine(doc.FilePath);
+						if(Path.GetExtension(doc.FilePath) == ".cs" && doc.TryGetSyntaxRoot(out var root)) {
+							walker.Visit(root);
 						}
+						writer.WriteLine("--- End");
 					}
 				}
+			}
+		}
+		
+		public ISymbol FindSymbol(CSharpSyntaxNode syntax)
+		{
+			try {
+				var model = Compilation.GetSemanticModel(syntax.SyntaxTree);
+				var symbol = model.GetDeclaredSymbol(syntax);
+				return symbol;
+			}
+			catch {
+				Util.ErrorLine(syntax.ToString() + " is not found...");
+				return null;
 			}
 		}
 
 		class Walker : SyntaxWalker
 		{
-			public System.IO.TextWriter Writer { get; set; }
+			public TextWriter Writer { get; set; }
 
 			public readonly List<MethodDeclarationSyntax> _MethodList = new List<MethodDeclarationSyntax>();
 
@@ -184,46 +205,7 @@ namespace CodeAnalysis
 				base.Visit(node);
 			}
 
-			string DumpTypeSyntax(TypeSyntax syntax)
-			{
-				switch(syntax.Kind()) {
-				case SyntaxKind.PredefinedType: {
-						var predefined = (PredefinedTypeSyntax)syntax;
-						return predefined.Keyword.Kind() + $"({predefined.Keyword.Text})";
-					}
-				case SyntaxKind.IdentifierName: {
-						var id = (IdentifierNameSyntax)syntax;
-						return id.Identifier.Text;
-					}
-				case SyntaxKind.QualifiedName: {
-						var qual = (QualifiedNameSyntax)syntax;
-						return DumpTypeSyntax(qual.Left) + qual.DotToken.Text + qual.Right.Identifier.Text;
-					}
-				case SyntaxKind.ArrayType: {
-						var array_type = (ArrayTypeSyntax)syntax;
-						var tmp = DumpTypeSyntax(array_type.ElementType);
-						foreach(var rank_specifier in array_type.RankSpecifiers) {
-							tmp += (rank_specifier.OpenBracketToken.Text + string.Concat(Enumerable.Range(0, rank_specifier.Sizes.Count - 1).Select(i => ", ")) + rank_specifier.CloseBracketToken.Text);
-						}
-						return tmp;
-					}
-				case SyntaxKind.GenericName: {
-						var generic = (GenericNameSyntax)syntax;
-						var type_arg_list = generic.TypeArgumentList;
-						return generic.Identifier.Text + type_arg_list.LessThanToken.Text + string.Join(", ", type_arg_list.Arguments.Select(e => DumpTypeSyntax(e))) + type_arg_list.GreaterThanToken.Text;
-					}
-				case SyntaxKind.TupleType: {
-						var tuple_type = (TupleTypeSyntax)syntax;
-						return tuple_type.OpenParenToken.Text + string.Join(", ", tuple_type.Elements.Select(e => DumpTypeSyntax(e.Type) + " " + e.Identifier.Text)) + tuple_type.CloseParenToken.Text;
-					}
-				case SyntaxKind.NullableType: {
-						var nullable = (NullableTypeSyntax)syntax;
-						return DumpTypeSyntax(nullable.ElementType) + nullable.QuestionToken.Text;
-					}
-				}
-				
-				throw new ArgumentException($"Kind {syntax.Kind()} is not support.");
-			}
+			string DumpTypeSyntax(TypeSyntax syntax) => syntax.GetFqn();
 
 			bool DumpMemberDeclaration(MemberDeclarationSyntax syntax, out string msg)
 			{
@@ -292,7 +274,9 @@ namespace CodeAnalysis
 	{
 		public readonly T _Symbol;
 
-		public SymbolContainer(T symbol) => _Symbol = symbol;
+		protected readonly TypeDatabase _TypeDatabase;
+
+		public SymbolContainer(TypeDatabase db, T symbol) => (_TypeDatabase, _Symbol) = (db, symbol);
 
 		public override string ToString() => _Symbol.Name;
 	}
@@ -302,14 +286,14 @@ namespace CodeAnalysis
 		readonly List<MethodSymbolContainer> _MethodSymbolContainerListInternal = new List<MethodSymbolContainer>();
 		public readonly ReadOnlyCollection<MethodSymbolContainer> _MethodSymbolContainerList;
 
-		public TypeSymbolContainer(ITypeSymbol symbol) : base(symbol)
+		public TypeSymbolContainer(TypeDatabase db, ITypeSymbol symbol) : base(db, symbol)
 		{
 			_MethodSymbolContainerList = new ReadOnlyCollection<MethodSymbolContainer>(_MethodSymbolContainerListInternal);
 
 			foreach(var member_symbol in symbol.GetMembers()) {
 				switch(member_symbol.Kind) {
 				case SymbolKind.Method: {
-						_MethodSymbolContainerListInternal.Add(new MethodSymbolContainer((IMethodSymbol)member_symbol));
+						_MethodSymbolContainerListInternal.Add(new MethodSymbolContainer(db, (IMethodSymbol)member_symbol));
 					}
 					break;
 
@@ -330,11 +314,11 @@ namespace CodeAnalysis
 	{
 		public bool Valid { get; }
 
-		public string[] UsableNamespace { get; }
-
 		public readonly BlockSyntax _Block;
 
-		public MethodSymbolContainer(IMethodSymbol symbol) : base(symbol)
+		readonly Dictionary<string, Variable> _VariableDict = new Dictionary<string, Variable>();
+
+		public MethodSymbolContainer(TypeDatabase db, IMethodSymbol symbol) : base(db, symbol)
 		{
 			BlockSyntax create_block(ExpressionSyntax express_syntax)
 			{
@@ -353,16 +337,6 @@ namespace CodeAnalysis
 			if(_Symbol.DeclaringSyntaxReferences.Length > 0 && _Symbol.IsAbstract == false) {
 				//--- 使用できる名前空間を検知 ---//
 				var syntax = _Symbol.DeclaringSyntaxReferences[0].GetSyntax();
-				{
-					var location = _Symbol.Locations.First(e => e.SourceTree.GetRoot().DescendantNodes().Any(node => node == syntax));
-					var namespace_list = location.SourceTree.GetRoot().DescendantNodes()
-						.Where(e => e.Kind() == SyntaxKind.UsingDirective)
-						.Cast<UsingDirectiveSyntax>()
-						.Select(e => e.Name.ToString())
-						.ToHashSet();
-					namespace_list.Add(_Symbol.ContainingNamespace.Name);
-					UsableNamespace = namespace_list.ToArray();
-				}
 
 				//--- BlockSyntaxの設定 ---//
 				switch(syntax.Kind()) {
@@ -384,6 +358,153 @@ namespace CodeAnalysis
 			_Block = block;
 		}
 
+		public void VisitStatementInMethodBlock(Action<Dictionary<string, Variable>, StatementSyntax> action)
+		{
+			_VariableDict.Clear();
+			foreach(var param in _Symbol.Parameters) {
+				_VariableDict.Add(param.Name, new Variable(0, param));
+			}
+
+			VisitStatement(_VariableDict, _Block, action, 0);
+		}
+
+		void VisitStatement(Dictionary<string, Variable> variable_dict, StatementSyntax statement, Action<Dictionary<string, Variable>, StatementSyntax> action, int depth)
+		{
+			var childlen = new SyntaxList<StatementSyntax>();
+			switch(statement.Kind()) {
+			case SyntaxKind.Block: {
+					var block = (BlockSyntax)statement;
+					childlen = block.Statements;
+				}
+				break;
+
+			case SyntaxKind.IfStatement: {
+					var if_statement = (IfStatementSyntax)statement;
+					childlen = childlen.Add(if_statement.Statement);
+					VisitExpression(variable_dict, if_statement.Condition, depth);
+				}
+				break;
+
+			case SyntaxKind.SwitchStatement: {
+					var sw_statement = (SwitchStatementSyntax)statement;
+					foreach(var section in sw_statement.Sections) {
+						childlen = childlen.AddRange(section.Statements);
+					}
+				}
+				break;
+
+			case SyntaxKind.ForEachStatement: {
+					var foreach_statement = (ForEachStatementSyntax)statement;
+					childlen = childlen.Add(foreach_statement.Statement);
+					var symbol = (ILocalSymbol)_TypeDatabase.FindSymbol(foreach_statement);
+					if(symbol != null) {
+						variable_dict.Add(symbol.Name, new Variable(depth, symbol));
+					}
+				}
+				break;
+
+			case SyntaxKind.LocalDeclarationStatement: {
+					var ldec_statement = (LocalDeclarationStatementSyntax)statement;
+					foreach(var declarator in ldec_statement.Declaration.Variables) {
+						if(declarator.Initializer != null) {
+							VisitExpression(variable_dict, declarator.Initializer.Value, depth);
+						}
+						var symbol = (ILocalSymbol)_TypeDatabase.FindSymbol(declarator);
+						variable_dict.Add(declarator.Identifier.Text, new Variable(depth - 1, symbol));
+					}
+				}
+				break;
+			}
+
+			foreach(var child in childlen) {
+				action(variable_dict, child);
+				VisitStatement(variable_dict, child, action, depth + 1);
+			}
+
+			var keys = variable_dict.Where(p => p.Value.Depth >= depth).Select(p => p.Key).ToArray();
+			foreach(var key in keys) {
+				variable_dict.Remove(key);
+			}
+		}
+
+		void VisitExpression(Dictionary<string, Variable> variable_dict, ExpressionSyntax expression, int depth)
+		{
+			switch(expression.Kind()) {
+			case SyntaxKind.LogicalAndExpression:
+			case SyntaxKind.LogicalOrExpression: {
+					var binary = (BinaryExpressionSyntax)expression;
+					VisitExpression(variable_dict, binary.Left, depth);
+					VisitExpression(variable_dict, binary.Right, depth);
+				}
+				break;
+
+			case SyntaxKind.LogicalNotExpression: {
+					var prefix_unary = (PrefixUnaryExpressionSyntax)expression;
+					VisitExpression(variable_dict, prefix_unary.Operand, depth);
+				}
+				break;
+
+			case SyntaxKind.SimpleMemberAccessExpression: {
+					var member_access = (MemberAccessExpressionSyntax)expression;
+					//if(variable_dict.Values.FirstOrDefault)
+					switch(member_access.Expression.Kind()) {
+					case SyntaxKind.IdentifierName: {
+							var identifier = (IdentifierNameSyntax)member_access.Expression;
+							if(variable_dict.TryGetValue(identifier.Identifier.Text, out var variable)) {
+								variable.HasReferenced = true;
+							}
+						}
+						break;
+
+					default:
+						VisitExpression(variable_dict, member_access.Expression, depth);
+						break;
+					}
+				}
+				break;
+
+			case SyntaxKind.InvocationExpression: {
+					var invocation = (InvocationExpressionSyntax)expression;
+					VisitExpression(variable_dict, invocation.Expression, depth);
+					foreach(var arg in invocation.ArgumentList.Arguments) {
+						VisitExpression(variable_dict, arg.Expression, depth);
+					}
+				}
+				break;
+
+			case SyntaxKind.IsPatternExpression: {
+					var is_pattern = (IsPatternExpressionSyntax)expression;
+					if(is_pattern.Pattern.Kind() != SyntaxKind.DeclarationPattern) {
+						break;
+					}
+					var dec_pattern = (DeclarationPatternSyntax)is_pattern.Pattern;
+					var symbol = (ILocalSymbol)_TypeDatabase.FindSymbol((SingleVariableDesignationSyntax)dec_pattern.Designation);
+					variable_dict.Add(symbol.Name, new Variable(depth, symbol));
+				}
+				break;
+			}
+		}
+
 		public override string ToString() => _Symbol.GetFqn();
+
+		public sealed class Variable
+		{
+			public ISymbol Symbol { get; }
+
+			public ITypeSymbol TypeSymbol { get; }
+
+			public int Depth { get; }
+
+			public bool HasReferenced { get; set; }
+
+			public Variable(int depth, ISymbol symbol)
+			{
+				Depth = depth;
+				Symbol = symbol;
+				TypeSymbol = symbol?.ContainingType;
+			}
+
+			public override string ToString() => $"{Depth}, {Symbol.ToString()}";
+		}
 	}
 }

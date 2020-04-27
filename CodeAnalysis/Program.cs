@@ -33,34 +33,40 @@ namespace CodeAnalysis
 			var manager = new Buildalyzer.AnalyzerManager(@"C:\Users\Kosaka\Documents\GitHub\BatEn\BatEn.sln");
 
 			foreach(var proj in manager.Projects) {
-				var typedb = new TypeDatabase();
-				Console.WriteLine("Building " + proj.Key + " now...");
-				typedb.Build(proj.Value);
-
+				Util.InfoLine("Building " + proj.Key + " now...");
 				var checker = new AnalysisChecker();
-				using(var writer = new System.IO.StreamWriter($"result_{proj.Value.ProjectInSolution.ProjectName}.csv")) {
-					foreach(var type_symbol in typedb._TypeSymbolList) {
-						Console.WriteLine("==== " + type_symbol._Symbol.Name + " - " + (type_symbol._Symbol.IsValueType ? "struct" : "class") + "====");
-						foreach(var container in type_symbol._MethodSymbolContainerList) {
-							Console.WriteLine(container._Symbol.Name);
-							if(container.Valid) {
-								var results = checker.Analysis(container);
-								foreach(var result in results) {
-									writer.WriteLine(result.DumpCsv());
-								}
-							}
-						}
-					}
-				}
+				checker.Analysis(proj.Value);
 			}
 
-			Console.WriteLine("Fin");
+			Util.InfoLine("Fin");
 		}
 	}
 
 	public class AnalysisChecker: CSharpSyntaxWalker
 	{
 		public const int _LanguageLayer = 0;
+
+		readonly TypeDatabase _TypeDatabase = new TypeDatabase();
+
+		public void Analysis(Buildalyzer.ProjectAnalyzer analyzer)
+		{
+			_TypeDatabase.Build(analyzer);
+
+			using(var writer = new System.IO.StreamWriter($"result_{analyzer.ProjectInSolution.ProjectName}.csv")) {
+				foreach(var type_symbol in _TypeDatabase._TypeSymbolList) {
+					//Console.WriteLine("==== " + type_symbol._Symbol.Name + " - " + (type_symbol._Symbol.IsValueType ? "struct" : "class") + "====");
+					foreach(var container in type_symbol._MethodSymbolContainerList) {
+						if(container.Valid == false) {
+							continue;
+						}
+						var results = Analysis(container);
+						foreach(var result in results) {
+							writer.WriteLine(result.DumpCsv());
+						}
+					}
+				}
+			}
+		}
 
 		public virtual List<AnalysisResultBase> Analysis(MethodSymbolContainer container)
 		{
@@ -70,14 +76,9 @@ namespace CodeAnalysis
 				results.Add(result);
 			}
 
-			var variable_dict = new Dictionary<string, TypeSyntax>();
-			//foreach(var param in container._Symbol.Parameters) {
-			//	variable_dict.Add(param.Name, (TypeSyntax)param.Type.DeclaringSyntaxReferences[0].GetSyntax());
-			//}
-			//
-			//VisitStatement(variable_dict, container._Block, (dict, statement) => {
-			//
-			//});
+			container.VisitStatementInMethodBlock((dict, statement) => {
+				
+			});
 
 			return results;
 		}
@@ -103,52 +104,6 @@ namespace CodeAnalysis
 			return true;
 		}
 
-		IEnumerable<AnalysisResultBase> CheckNullCheckMisstake(BlockSyntax block)
-		{
-			yield break;
-		}
-
-		void VisitStatement(Dictionary<string, TypeSyntax> variable_dict, StatementSyntax statement, Action<Dictionary<string, TypeSyntax>, StatementSyntax> action)
-		{
-			var childlen = new SyntaxList<StatementSyntax>();
-
-			var scope_variable_list = new List<string>();
-			switch(statement.Kind()) {
-			case SyntaxKind.Block: {
-					var block = (BlockSyntax)statement;
-					childlen = block.Statements;
-				}
-				break;
-
-			case SyntaxKind.IfStatement: {
-					var if_statement = (IfStatementSyntax)statement;
-					childlen = childlen.Add(if_statement.Statement);
-				}
-				break;
-
-			case SyntaxKind.SwitchStatement: {
-					var sw_statement = (SwitchStatementSyntax)statement;
-					foreach(var section in sw_statement.Sections) {
-						childlen = childlen.AddRange(section.Statements);
-					}
-				}
-				break;
-
-			case SyntaxKind.LocalDeclarationStatement: {
-					var ldec_statement = (LocalDeclarationStatementSyntax)statement;
-					foreach(var declarator in ldec_statement.Declaration.Variables) {
-						variable_dict.Add(declarator.Identifier.Text, ldec_statement.Declaration.Type);
-					}
-				}
-				break;
-			}
-
-			foreach(var child in childlen) {
-				action(variable_dict, child);
-				VisitStatement(variable_dict, child, action);
-			}
-		}
-
 		protected IEnumerable<SyntaxNode> EnumerateNodes(SyntaxNode root)
 		{
 			yield return root;
@@ -158,19 +113,6 @@ namespace CodeAnalysis
 					yield return descend;
 				}
 			}
-		}
-	}
-
-	public class Variable
-	{
-		public string Name { get; }
-
-		public ITypeSymbol Type { get; }
-
-		public Variable(string name, ITypeSymbol type)
-		{
-			Name = name;
-			Type = type;
 		}
 	}
 
